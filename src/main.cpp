@@ -4,6 +4,7 @@
 #include <PubSubClient.h> //https://github.com/knolleary/pubsubclient
 #include <ArduinoOTA.h>   //https://github.com/esp8266/Arduino/tree/master/libraries/ArduinoOTA
 #include <SimpleTimer.h>  //https://github.com/marcelloromani/Arduino-SimpleTimer/tree/master/SimpleTimer
+#include <ArduinoJson.h>  // https://github.com/bblanchon/ArduinoJson
 
 #include "SwartNinjaDHT.h"
 #include "SwartNinjaLDR.h"
@@ -53,26 +54,42 @@ WiFiClient wifiClient;
  * ------------------------------------------------- */
 // function declaration
 void setupMQTT();
+void publishAllState();
 void connectToMQTT();
 void checkInMQTT();
 void subscribeToMQTT(char *p_topic);
-void publishToMQTT(char *p_topic, char *p_payload, bool retain = true);
+bool publishToMQTT(char *p_topic, char *p_payload, bool retain = true);
 void handleMQTTMessage(char *topic, byte *payload, unsigned int length);
 
 // variables declaration
 bool boot = true;
 char MQTT_PAYLOAD[8] = {0};
-char MQTT_AVAILABILITY_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_AVAILABILITY_TOPIC_TEMPLATE) - 2] = {0};
-char MQTT_WIFI_QUALITY_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(WIFI_QUALITY_SENSOR_NAME) - 4] = {0};
+char MQTT_DEVICE_AVAILABILITY_STATE_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_DEVICE_AVAILABILITY_TEMPLATE) - 2] = {0};
+char MQTT_DEVICE_COMMAND_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_DEVICE_COMMAND_TEMPLATE) - 2] = {0};
 
-char MQTT_DOOR_SENSOR_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(DOOR_SENSOR_NAME) - 4] = {0};
+// wifi sensor
+char MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC[sizeof(MQTT_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(WIFI_SIGNAL_STRENGTH_SENSOR_NAME) - 4] = {0};
+char MQTT_WIFI_SIGNAL_STRENGTH_DISCOVERY_TOPIC[sizeof(MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
 
-char MQTT_LDR_SENSOR_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(LDR_SENSOR_NAME) - 4] = {0};
-char MQTT_PIR_SENSOR_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(PIR_SENSOR_NAME) - 4] = {0};
+// door sensor
+char MQTT_DOOR_STATE_TOPIC[sizeof(MQTT_BINARY_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(DOOR_SENSOR_NAME) - 4] = {0};
+char MQTT_DOOR_DISCOVERY_TOPIC[sizeof(MQTT_DOOR_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
 
-char MQTT_DHT_TEMP_SENSOR_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(DHT_TEMPERATURE_SENSOR_NAME) - 4] = {0};
-char MQTT_DHT_HUMIDITY_SENSOR_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(DHT_HUMIDITY_SENSOR_NAME) - 4] = {0};
-char MQTT_DHT_REALFEEL_SENSOR_TOPIC[sizeof(ESP_CHIP_ID) + sizeof(MQTT_SENSOR_TOPIC_TEMPLATE) + sizeof(DHT_REALFEEL_SENSOR_NAME) - 4] = {0};
+// light sensor
+char MQTT_LDR_STATE_TOPIC[sizeof(MQTT_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(LDR_SENSOR_NAME) - 4] = {0};
+char MQTT_LDR_DISCOVERY_TOPIC[sizeof(MQTT_LDR_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
+
+// motion sensor
+char MQTT_PIR_STATE_TOPIC[sizeof(MQTT_BINARY_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(PIR_SENSOR_NAME) - 4] = {0};
+char MQTT_PIR_DISCOVERY_TOPIC[sizeof(MQTT_PIR_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
+
+// dht sensor
+char MQTT_DHT_TEMP_STATE_TOPIC[sizeof(MQTT_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(DHT_TEMPERATURE_SENSOR_NAME) - 4] = {0};
+char MQTT_DHT_TEMP_DISCOVERY_TOPIC[sizeof(MQTT_DHT_TEMP_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
+char MQTT_DHT_HUMIDITY_STATE_TOPIC[sizeof(MQTT_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(DHT_HUMIDITY_SENSOR_NAME) - 4] = {0};
+char MQTT_DHT_HUMIDITY_DISCOVERY_TOPIC[sizeof(MQTT_DHT_HUMIDITY_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
+char MQTT_DHT_REALFEEL_STATE_TOPIC[sizeof(MQTT_SENSOR_TEMPLATE) + sizeof(ESP_CHIP_ID) + sizeof(DHT_REALFEEL_SENSOR_NAME) - 4] = {0};
+char MQTT_DHT_REALFEEL_DISCOVERY_TOPIC[sizeof(MQTT_DHT_REALFEEL_STATE_TOPIC) + sizeof(MQTT_DISCOVERY_TEMPLATE) - 2] = {0};
 
 // Initialize the mqtt mqttClient object
 PubSubClient mqttClient(wifiClient);
@@ -81,6 +98,13 @@ PubSubClient mqttClient(wifiClient);
 //   SimpleTimer
 ///////////////////////////////////////////////////////////////////////////
 SimpleTimer timer;
+
+///////////////////////////////////////////////////////////////////////////
+//   Home Assistant
+///////////////////////////////////////////////////////////////////////////
+void hassAutoConfig();
+bool registerSensor(DynamicJsonDocument doc, char *topic);
+void unregisterSensors();
 
 ///////////////////////////////////////////////////////////////////////////
 //   SwartNinjaSensors
@@ -123,6 +147,9 @@ void setup()
   sprintf(OTA_HOSTNAME, OTA_HOSTNAME_TEMPLATE, ESP_CHIP_ID);
   ArduinoOTA.setHostname(OTA_HOSTNAME);
   ArduinoOTA.begin();
+
+  Serial.print(F("[OTA]: HOSTNAME: "));
+  Serial.println(OTA_HOSTNAME);
 
   delay(10);
 
@@ -171,32 +198,32 @@ void handleSwartNinjaSensorUpdate(char *value, int pin, const char *event)
   if (event == SN_LDR_SENSOR_EVT)
   {
     // publish luminance
-    publishToMQTT(MQTT_LDR_SENSOR_TOPIC, value);
+    publishToMQTT(MQTT_LDR_STATE_TOPIC, value);
   }
   else if (event == SN_PIR_SENSOR_EVT)
   {
-    // publish door state
-    publishToMQTT(MQTT_PIR_SENSOR_TOPIC, value);
+    // publish motion state
+    publishToMQTT(MQTT_PIR_STATE_TOPIC, value);
   }
   else if (event == SN_RSW_SENSOR_EVT)
   {
     // publish door open or closed
-    publishToMQTT(MQTT_DOOR_SENSOR_TOPIC, value);
+    publishToMQTT(MQTT_DOOR_STATE_TOPIC, value);
   }
-  else if(event == SN_DHT_TEMPERATURE_EVT)
+  else if (event == SN_DHT_TEMPERATURE_EVT)
   {
     // publish dht temperature
-    publishToMQTT(MQTT_DHT_TEMP_SENSOR_TOPIC, value);
+    publishToMQTT(MQTT_DHT_TEMP_STATE_TOPIC, value);
   }
   else if (event == SN_DHT_HUMIDITY_EVT)
   {
     // publish dht humidity
-    publishToMQTT(MQTT_DHT_HUMIDITY_SENSOR_TOPIC, value);
+    publishToMQTT(MQTT_DHT_HUMIDITY_STATE_TOPIC, value);
   }
   else if (event == SN_DHT_REALFEEL_EVT)
   {
     // publish dht real feel
-    publishToMQTT(MQTT_DHT_REALFEEL_SENSOR_TOPIC, value);
+    publishToMQTT(MQTT_DHT_REALFEEL_STATE_TOPIC, value);
   }
 }
 
@@ -283,15 +310,15 @@ void onGotIP(const WiFiEventStationModeGotIP &event)
 void loopWiFiSensor(void)
 {
   static unsigned long lastWiFiQualityMeasure = 0;
-  if (lastWiFiQualityMeasure + WIFI_QUALITY_INTERVAL <= millis() || previousWiFiSignalStrength == -1)
+  if (lastWiFiQualityMeasure + WIFI_SIGNAL_STRENGTH_INTERVAL <= millis() || previousWiFiSignalStrength == -1)
   {
     lastWiFiQualityMeasure = millis();
     int currentWiFiSignalStrength = getWiFiSignalStrength();
-    if (isnan(previousWiFiSignalStrength) || currentWiFiSignalStrength <= previousWiFiSignalStrength - WIFI_QUALITY_OFFSET_VALUE || currentWiFiSignalStrength >= previousWiFiSignalStrength + WIFI_QUALITY_OFFSET_VALUE)
+    if (isnan(previousWiFiSignalStrength) || currentWiFiSignalStrength <= previousWiFiSignalStrength - WIFI_SIGNAL_STRENGTH_OFFSET_VALUE || currentWiFiSignalStrength >= previousWiFiSignalStrength + WIFI_SIGNAL_STRENGTH_OFFSET_VALUE)
     {
       previousWiFiSignalStrength = currentWiFiSignalStrength;
       dtostrf(currentWiFiSignalStrength, 2, 2, MQTT_PAYLOAD);
-      publishToMQTT(MQTT_WIFI_QUALITY_TOPIC, MQTT_PAYLOAD);
+      publishToMQTT(MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC, MQTT_PAYLOAD);
     }
   }
 }
@@ -312,6 +339,154 @@ int getWiFiSignalStrength(void)
 }
 
 ///////////////////////////////////////////////////////////////////////////
+//   Home Assistant
+///////////////////////////////////////////////////////////////////////////
+
+void hassAutoConfig()
+{
+  char unique_id[40];
+  char name[80];
+  DynamicJsonDocument config(1024);
+  Serial.println("hassAutoConfig - Start");
+
+  sprintf(unique_id, "%s_wifi_signal_strength", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "signal_strength";                    // device_class
+  config["unit_of_meas"] = "%";                             // unit_of_measurement
+  config["stat_t"] = MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC; // state_topic
+  registerSensor(config, MQTT_WIFI_SIGNAL_STRENGTH_DISCOVERY_TOPIC);
+
+  config.clear();
+  sprintf(unique_id, "%s_luminance", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "illuminance";       //device_class
+  config["unit_of_meas"] = "lx";           //unit_of_measurement
+  config["stat_t"] = MQTT_LDR_STATE_TOPIC; //state_topic
+  registerSensor(config, MQTT_LDR_DISCOVERY_TOPIC);
+
+  config.clear();
+  sprintf(unique_id, "%s_motion", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "motion";            //device_class
+  config["stat_t"] = MQTT_PIR_STATE_TOPIC; //state_topic
+  registerSensor(config, MQTT_PIR_DISCOVERY_TOPIC);
+
+  config.clear();
+  sprintf(unique_id, "%s_door", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "door";               //device_class
+  config["stat_t"] = MQTT_DOOR_STATE_TOPIC; //state_topic
+  registerSensor(config, MQTT_DOOR_DISCOVERY_TOPIC);
+
+  config.clear();
+  sprintf(unique_id, "%s_temperature", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "temperature";            //device_class
+  config["unit_of_meas"] = "°C";                //unit_of_measurement
+  config["stat_t"] = MQTT_DHT_TEMP_STATE_TOPIC; //state_topic
+  registerSensor(config, MQTT_DHT_TEMP_DISCOVERY_TOPIC);
+
+  config.clear();
+  sprintf(unique_id, "%s_humidity", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "humidity";                   //device_class
+  config["unit_of_meas"] = "%";                     //unit_of_measurement
+  config["stat_t"] = MQTT_DHT_HUMIDITY_STATE_TOPIC; //state_topic
+  registerSensor(config, MQTT_DHT_HUMIDITY_DISCOVERY_TOPIC);
+
+  config.clear();
+  sprintf(unique_id, "%s_realfeel", ESP_CHIP_ID);
+  sprintf(name, DEVICE_NAME_TEMPLATE, unique_id);
+  config["uniq_id"] = unique_id;
+  config["name"] = name;
+  config["dev_cla"] = "temperature";                //device_class
+  config["unit_of_meas"] = "°C";                    //unit_of_measurement
+  config["stat_t"] = MQTT_DHT_REALFEEL_STATE_TOPIC; //state_topic
+  registerSensor(config, MQTT_DHT_REALFEEL_DISCOVERY_TOPIC);
+
+  Serial.println("hassAutoConfig - done");
+}
+
+/*
+ * Add device to descovery topic and send config
+ */
+bool registerSensor(DynamicJsonDocument doc, char *topic)
+{
+  doc["avty_t"] = MQTT_DEVICE_AVAILABILITY_STATE_TOPIC; // availability_topic
+
+  JsonObject device = doc.createNestedObject("dev");       // device
+  JsonArray identifiers = device.createNestedArray("ids"); // identifiers
+  identifiers.add(ESP_CHIP_ID);
+  device["name"] = DEVICE_FRIENDLY_NAME; // name
+  device["mf"] = DEVICE_MANUFACTURER;    // manufacturer
+  device["mdl"] = DEVICE_MODEL;          // model
+  device["sw"] = DEVICE_VERSION;         // sw_version
+
+  String output;
+  serializeJson(doc, output);
+
+  char *buffer = new char[output.length() + 1];
+  strcpy(buffer, output.c_str());
+
+  bool result = publishToMQTT(topic, buffer);
+
+  // Cleanup
+  delete[] buffer;
+
+  return result;
+}
+
+void unregisterSensors()
+{
+  if (!publishToMQTT(MQTT_WIFI_SIGNAL_STRENGTH_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister wifi sensor");
+  }
+
+  if (!publishToMQTT(MQTT_DOOR_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister door sensor");
+  }
+
+  if (!publishToMQTT(MQTT_PIR_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister motion sensor");
+  }
+
+  if (!publishToMQTT(MQTT_LDR_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister LDR sensor");
+  }
+
+  if (!publishToMQTT(MQTT_DHT_TEMP_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister temperature sensor");
+  }
+
+  if (!publishToMQTT(MQTT_DHT_HUMIDITY_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister humidity sensor");
+  }
+
+  if (!publishToMQTT(MQTT_DHT_REALFEEL_DISCOVERY_TOPIC, ""))
+  {
+    Serial.println("Failed to unregister real feel sensor");
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////
 //   MQTT
 ///////////////////////////////////////////////////////////////////////////
 
@@ -320,59 +495,144 @@ int getWiFiSignalStrength(void)
  */
 void setupMQTT()
 {
-  sprintf(MQTT_AVAILABILITY_TOPIC, MQTT_AVAILABILITY_TOPIC_TEMPLATE, ESP_CHIP_ID);
   Serial.println();
-  Serial.println("---------------------------------------------------------------------------");
-  Serial.print(F("[MQTT]: MQTT availability topic: "));
-  Serial.println(MQTT_AVAILABILITY_TOPIC);
+  Serial.println("-------------------------------- MQTT TOPICS --------------------------------");
+  Serial.println();
+  Serial.println("--- COMMAND");
+  Serial.println();
+  sprintf(MQTT_DEVICE_COMMAND_TOPIC, MQTT_DEVICE_COMMAND_TEMPLATE, ESP_CHIP_ID);
+  Serial.print(F("[MQTT] Device: "));
+  Serial.println(MQTT_DEVICE_COMMAND_TOPIC);
 
-  sprintf(MQTT_WIFI_QUALITY_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, WIFI_QUALITY_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT WiFi Quality topic: "));
-  Serial.println(MQTT_WIFI_QUALITY_TOPIC);
+  Serial.println();
+  Serial.println("--- STATE");
+  Serial.println();
+  sprintf(MQTT_DEVICE_AVAILABILITY_STATE_TOPIC, MQTT_DEVICE_AVAILABILITY_TEMPLATE, ESP_CHIP_ID);
+  Serial.print(F("[MQTT] Device Availability: "));
+  Serial.println(MQTT_DEVICE_AVAILABILITY_STATE_TOPIC);
 
-  sprintf(MQTT_DOOR_SENSOR_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, DOOR_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT Door topic: "));
-  Serial.println(MQTT_DOOR_SENSOR_TOPIC);
+  sprintf(MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC, MQTT_SENSOR_TEMPLATE, ESP_CHIP_ID, WIFI_SIGNAL_STRENGTH_SENSOR_NAME);
+  Serial.print(F("[MQTT] WiFi Signal Strength: "));
+  Serial.println(MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC);
 
-  sprintf(MQTT_LDR_SENSOR_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, LDR_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT LDR topic: "));
-  Serial.println(MQTT_LDR_SENSOR_TOPIC);
+  sprintf(MQTT_DOOR_STATE_TOPIC, MQTT_BINARY_SENSOR_TEMPLATE, ESP_CHIP_ID, DOOR_SENSOR_NAME);
+  Serial.print(F("[MQTT] Door: "));
+  Serial.println(MQTT_DOOR_STATE_TOPIC);
 
-  sprintf(MQTT_PIR_SENSOR_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, PIR_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT PIR topic: "));
-  Serial.println(MQTT_PIR_SENSOR_TOPIC);
+  sprintf(MQTT_LDR_STATE_TOPIC, MQTT_SENSOR_TEMPLATE, ESP_CHIP_ID, LDR_SENSOR_NAME);
+  Serial.print(F("[MQTT] LDR: "));
+  Serial.println(MQTT_LDR_STATE_TOPIC);
 
-  sprintf(MQTT_DHT_TEMP_SENSOR_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, DHT_TEMPERATURE_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT temperature topic: "));
-  Serial.println(MQTT_DHT_TEMP_SENSOR_TOPIC);
+  sprintf(MQTT_PIR_STATE_TOPIC, MQTT_BINARY_SENSOR_TEMPLATE, ESP_CHIP_ID, PIR_SENSOR_NAME);
+  Serial.print(F("[MQTT] PIR: "));
+  Serial.println(MQTT_PIR_STATE_TOPIC);
 
-  sprintf(MQTT_DHT_HUMIDITY_SENSOR_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, DHT_HUMIDITY_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT humidity topic: "));
-  Serial.println(MQTT_DHT_HUMIDITY_SENSOR_TOPIC);
+  sprintf(MQTT_DHT_TEMP_STATE_TOPIC, MQTT_SENSOR_TEMPLATE, ESP_CHIP_ID, DHT_TEMPERATURE_SENSOR_NAME);
+  Serial.print(F("[MQTT] Temperature: "));
+  Serial.println(MQTT_DHT_TEMP_STATE_TOPIC);
 
-  sprintf(MQTT_DHT_REALFEEL_SENSOR_TOPIC, MQTT_SENSOR_TOPIC_TEMPLATE, ESP_CHIP_ID, DHT_REALFEEL_SENSOR_NAME);
-  Serial.print(F("[MQTT]: MQTT realfeel topic: "));
-  Serial.println(MQTT_DHT_REALFEEL_SENSOR_TOPIC);
+  sprintf(MQTT_DHT_HUMIDITY_STATE_TOPIC, MQTT_SENSOR_TEMPLATE, ESP_CHIP_ID, DHT_HUMIDITY_SENSOR_NAME);
+  Serial.print(F("[MQTT] Humidity: "));
+  Serial.println(MQTT_DHT_HUMIDITY_STATE_TOPIC);
 
-  Serial.println("---------------------------------------------------------------------------");
+  sprintf(MQTT_DHT_REALFEEL_STATE_TOPIC, MQTT_SENSOR_TEMPLATE, ESP_CHIP_ID, DHT_REALFEEL_SENSOR_NAME);
+  Serial.print(F("[MQTT] Real Feel: "));
+  Serial.println(MQTT_DHT_REALFEEL_STATE_TOPIC);
+
+  Serial.println();
+  Serial.println("--- CONFIG");
+  Serial.println();
+
+  sprintf(MQTT_WIFI_SIGNAL_STRENGTH_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_WIFI_SIGNAL_STRENGTH_STATE_TOPIC);
+  Serial.print(F("[MQTT] WiFi Signal Strength: "));
+  Serial.println(MQTT_WIFI_SIGNAL_STRENGTH_DISCOVERY_TOPIC);
+
+  sprintf(MQTT_DOOR_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_DOOR_STATE_TOPIC);
+  Serial.print(F("[MQTT] Door: "));
+  Serial.println(MQTT_DOOR_DISCOVERY_TOPIC);
+
+  sprintf(MQTT_LDR_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_LDR_STATE_TOPIC);
+  Serial.print(F("[MQTT] LDR: "));
+  Serial.println(MQTT_LDR_DISCOVERY_TOPIC);
+
+  sprintf(MQTT_PIR_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_PIR_STATE_TOPIC);
+  Serial.print(F("[MQTT] PIR: "));
+  Serial.println(MQTT_PIR_DISCOVERY_TOPIC);
+
+  sprintf(MQTT_DHT_TEMP_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_DHT_TEMP_STATE_TOPIC);
+  Serial.print(F("[MQTT] Temperature: "));
+  Serial.println(MQTT_DHT_TEMP_DISCOVERY_TOPIC);
+
+  sprintf(MQTT_DHT_HUMIDITY_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_DHT_HUMIDITY_STATE_TOPIC);
+  Serial.print(F("[MQTT] Humidity: "));
+  Serial.println(MQTT_DHT_HUMIDITY_DISCOVERY_TOPIC);
+
+  sprintf(MQTT_DHT_REALFEEL_DISCOVERY_TOPIC, MQTT_DISCOVERY_TEMPLATE, MQTT_DHT_REALFEEL_STATE_TOPIC);
+  Serial.print(F("[MQTT] Real Feel: "));
+  Serial.println(MQTT_DHT_REALFEEL_DISCOVERY_TOPIC);
+
+  Serial.println("----------------------------------------------------------------------------");
 
   mqttClient.setServer(MQTT_SERVER, MQTT_SERVER_PORT);
   mqttClient.setCallback(handleMQTTMessage);
 }
 
+void publishAllState()
+{
+  // publish luminance
+  publishToMQTT(MQTT_LDR_STATE_TOPIC, luxSensor.getCurrentValueChar());
+
+  // publish motion state
+  publishToMQTT(MQTT_PIR_STATE_TOPIC, motionSensor.getState());
+
+  // publish door open or closed
+  publishToMQTT(MQTT_DOOR_STATE_TOPIC, doorSensor.getCurrentState());
+
+  // publish dht sensor readings
+  publishToMQTT(MQTT_DHT_TEMP_STATE_TOPIC, dht.getTemperatureState());
+  publishToMQTT(MQTT_DHT_HUMIDITY_STATE_TOPIC, dht.getHumidityState());
+  publishToMQTT(MQTT_DHT_REALFEEL_STATE_TOPIC, dht.getRealFeelState());
+}
+
 void handleMQTTMessage(char *topic, byte *payload, unsigned int length)
 {
-  String newTopic = topic;
-  payload[length] = '\0';
-  String newPayload = String((char *)payload);
+  char message[length + 1];
+  for (int i = 0; i < length; i++)
+  {
+    message[i] = (char)payload[i];
+  }
+  message[length] = '\0';
 
-  #ifdef DEBUG
-    Serial.print("[MQTT]: handleMQTTMessage - Message arrived, topic: ");
-    Serial.print(topic);
-    Serial.print(", payload: ");
-    Serial.println(newPayload);
-    Serial.println();
-  #endif
+  Serial.print("[MQTT]: handleMQTTMessage - Message arrived, topic: ");
+  Serial.print(topic);
+  Serial.print(", payload: ");
+  Serial.println(message);
+  Serial.println();
+
+  if (strcmp(topic, MQTT_DEVICE_COMMAND_TOPIC) == 0)
+  {
+    if (strcmp(message, MQTT_CMD_RESET) == 0)
+    {
+      Serial.println("Restarting device");
+      ESP.restart();
+    }
+    else if (strcmp(message, MQTT_CMD_STATE) == 0)
+    {
+      Serial.println("Sending all sensor state");
+      publishAllState();
+    }
+    else if (strcmp(message, MQTT_CMD_REGISTER) == 0)
+    {
+      Serial.println("Forcing registration of sensor");
+      hassAutoConfig();
+      publishAllState();
+    }
+    else if (strcmp(message, MQTT_CMD_UNREGISTER) == 0)
+    {
+      Serial.println("Forcing unregistration of sensor");
+      unregisterSensors();
+    }
+  }
 }
 
 /*
@@ -387,11 +647,11 @@ void connectToMQTT()
     if (retries < 150)
     {
       Serial.println("[MQTT]: Attempting MQTT connection...");
-      if (mqttClient.connect(ESP_CHIP_ID, MQTT_USERNAME, MQTT_PASSWORD, MQTT_AVAILABILITY_TOPIC, 0, 1, "offline"))
+      if (mqttClient.connect(ESP_CHIP_ID, MQTT_USERNAME, MQTT_PASSWORD, MQTT_DEVICE_AVAILABILITY_STATE_TOPIC, 0, 1, "offline"))
       {
 
         Serial.println(F("[MQTT]: The mqttClient is successfully connected to the MQTT broker"));
-        publishToMQTT(MQTT_AVAILABILITY_TOPIC, "online");
+        publishToMQTT(MQTT_DEVICE_AVAILABILITY_STATE_TOPIC, "online");
         if (boot)
         {
           Serial.println(F("[MQTT]: Rebooted"));
@@ -401,6 +661,11 @@ void connectToMQTT()
         {
           Serial.println(F("[MQTT]: Reconnected"));
         }
+        // subscribe to command topic
+        subscribeToMQTT(MQTT_DEVICE_COMMAND_TOPIC);
+
+        // publish all states
+        publishAllState();
       }
       else
       {
@@ -427,7 +692,7 @@ void connectToMQTT()
 
 void checkInMQTT()
 {
-  publishToMQTT(MQTT_AVAILABILITY_TOPIC, "online", false);
+  publishToMQTT(MQTT_DEVICE_AVAILABILITY_STATE_TOPIC, "online", false);
   timer.setTimeout(120000, checkInMQTT);
 }
 
@@ -438,41 +703,43 @@ void subscribeToMQTT(char *p_topic)
 {
   if (mqttClient.subscribe(p_topic))
   {
-    #ifdef DEBUG
-      Serial.print(F("[MQTT]: subscribeToMQTT - Sending the MQTT subscribe succeeded for topic: "));
-      Serial.println(p_topic);
-    #endif
+#ifdef DEBUG
+    Serial.print(F("[MQTT]: subscribeToMQTT - Sending the MQTT subscribe succeeded for topic: "));
+    Serial.println(p_topic);
+#endif
   }
   else
   {
-    #ifdef DEBUG
-      Serial.print(F("[MQTT]: subscribeToMQTT - ERROR, Sending the MQTT subscribe failed for topic: "));
-      Serial.println(p_topic);
-    #endif
+#ifdef DEBUG
+    Serial.print(F("[MQTT]: subscribeToMQTT - ERROR, Sending the MQTT subscribe failed for topic: "));
+    Serial.println(p_topic);
+#endif
   }
 }
 
 /*
   Function called to publish to a MQTT topic with the given payload
 */
-void publishToMQTT(char *p_topic, char *p_payload, bool retain)
+bool publishToMQTT(char *p_topic, char *p_payload, bool retain)
 {
   if (mqttClient.publish(p_topic, p_payload, retain))
   {
-    #ifdef DEBUG
-      Serial.print(F("[MQTT]: publishToMQTT - MQTT message published successfully, topic: "));
-      Serial.print(p_topic);
-      Serial.print(F(", payload: "));
-      Serial.println(p_payload);
-    #endif
+#ifdef DEBUG
+    Serial.print(F("[MQTT]: publishToMQTT - MQTT message published successfully, topic: "));
+    Serial.print(p_topic);
+    Serial.print(F(", payload: "));
+    Serial.println(p_payload);
+#endif
+    return true;
   }
   else
   {
-    #ifdef DEBUG
-      Serial.println(F("[MQTT]: publishToMQTT - ERROR, MQTT message not published, either connection lost, or message too large. Topic: "));
-      Serial.print(p_topic);
-      Serial.print(F(" , payload: "));
-      Serial.println(p_payload);
-    #endif
+#ifdef DEBUG
+    Serial.println(F("[MQTT]: publishToMQTT - ERROR, MQTT message not published, either connection lost, or message too large. Topic: "));
+    Serial.print(p_topic);
+    Serial.print(F(" , payload: "));
+    Serial.println(p_payload);
+#endif
+    return false;
   }
 }
