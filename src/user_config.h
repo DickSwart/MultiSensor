@@ -1,12 +1,6 @@
 #ifndef _USER_CONFIG_H_
 #define _USER_CONFIG_H_
 
-#define DEVICE_NAME_TEMPLATE "Bathroom_MultiSensor_%s"
-#define DEVICE_FRIENDLY_NAME "Bathroom: MultiSensor"
-#define DEVICE_MANUFACTURER "SwartNinja"
-#define DEVICE_MODEL "LoLin NodeMCU V3"
-#define DEVICE_VERSION "1.0.0"
-
 ///////////////////////////////////////////////////////////////////////////
 //   WIFI
 ///////////////////////////////////////////////////////////////////////////
@@ -24,21 +18,18 @@
 #define MQTT_USERNAME "mqtt_user_name"
 #define MQTT_PASSWORD "mqtt_password"
 
-#define MQTT_DEVICE_AVAILABILITY_TEMPLATE "homeassistant/%s/state" // MQTT availability: online/offline
-#define MQTT_DEVICE_COMMAND_TEMPLATE "homeassistant/%s/set"
-
-#define MQTT_BINARY_SENSOR_TEMPLATE "homeassistant/binary_sensor/%s/%s"
-#define MQTT_SENSOR_TEMPLATE "homeassistant/sensor/%s/%s"
-#define MQTT_DISCOVERY_TEMPLATE "%s/config"
+#define MQTT_DEVICE_AVAILABILITY_TEMPLATE "multisensor/%s/state"
+#define MQTT_DEVICE_COMMAND_TEMPLATE "multisensor/%s/set"
+#define MQTT_SENSOR_STATE_TEMPLATE "multisensor/%s/%s/state"
 
 #define MQTT_PAYLOAD_ON "ON"
 #define MQTT_PAYLOAD_OFF "OFF"
+#define MQTT_PAYLOAD_AVAILABLE "online"
+#define MQTT_PAYLOAD_NOT_AVAILABLE "offline"
 
 // Message text for device commands
 #define MQTT_CMD_RESET "reset"           // command that resets the device
 #define MQTT_CMD_STATE "state"           // command to resend all state
-#define MQTT_CMD_REGISTER "register"     // command to force reregistration
-#define MQTT_CMD_UNREGISTER "unregister" // command to force unregistration
 
 ///////////////////////////////////////////////////////////////////////////
 //   DOOR SENSOR
@@ -70,7 +61,7 @@
 ///////////////////////////////////////////////////////////////////////////
 //   Over-the-Air update (OTA)
 ///////////////////////////////////////////////////////////////////////////
-#define OTA_HOSTNAME_TEMPLATE DEVICE_NAME_TEMPLATE
+#define OTA_HOSTNAME_TEMPLATE "Bathroom: MultiSensor"
 #define OTA_PORT 8266 // port 8266 by default
 
 #endif // _USER_CONFIG_H_
